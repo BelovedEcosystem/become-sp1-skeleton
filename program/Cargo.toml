@@ -1,0 +1,16 @@
+[package]
+name = "skeleton-commit-program"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "skeleton-commit-program"
+path = "src/main.rs"
+
+[dependencies]
+sp1-zkvm = "6.6.0"
+alloy-sol-types = { workspace = true }

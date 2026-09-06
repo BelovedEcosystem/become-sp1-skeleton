@@ -1,0 +1,60 @@
+name: Docker ELF (reproducible)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  docker-elf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SP1 (cargo-prove)
+        run: |
+          curl -L https://sp1.succinct.xyz | bash
+          echo "$HOME/.sp1/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install SP1 toolchain
+        run: |
+          export PATH="$HOME/.sp1/bin:$HOME/.cargo/bin:$PATH"
+          cargo prove --version
+          cargo prove install-toolchain || true
+
+      - name: Build guest ELF with Docker
+        working-directory: program
+        run: |
+          export PATH="$HOME/.sp1/bin:$HOME/.cargo/bin:$PATH"
+          docker version
+          cargo prove build --docker --tag v6.6.0
+
+      - name: Collect ELF + vkey
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.sp1/bin:$HOME/.cargo/bin:$PATH"
+          ELF=$(find program -type f -path '*/release/skeleton-commit-program' | head -1)
+          if [[ -z "$ELF" ]]; then
+            ELF=$(find . -type f -name 'skeleton-commit-program' | head -1)
+          fi
+          test -n "$ELF"
+          mkdir -p out
+          cp -a "$ELF" out/skeleton-commit-program
+          sha256sum out/skeleton-commit-program | tee out/elf.sha256
+          (cd program && cargo prove vkey 2>&1 | tee ../out/vkey-prove.txt) || true
+          if [[ -d script ]]; then
+            (cd script && cargo run --release --bin vkey -- --elf ../out/skeleton-commit-program 2>&1 | tee ../out/vkey-run.txt) || true
+          fi
+          ls -la out
+          test -s out/skeleton-commit-program
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: become-skeleton-docker-elf
+          path: out/
+          if-no-files-found: error
