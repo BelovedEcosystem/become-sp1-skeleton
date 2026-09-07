@@ -221,6 +221,34 @@ pub fn check_with_tier1_cert(
     NatTargetFragment.check(question, answer, visible)
 }
 
+/// Tier-2 settlement entry: verify T2CERT0 (bind Q/A/id + pin + safe_ok_digest) then Nat fragment.
+///
+/// Empty cert / PLACEHOLDER / bad digest ⇒ error (never Valid). Does not run SafeChecker in-guest.
+pub fn check_with_tier2_cert(
+    question: &[u8],
+    answer: &[u8],
+    visible: u32,
+    id: &[u8; 32],
+    cert_bytes: &[u8],
+    ok_lines_raw: &[u8],
+) -> Result<CheckReport, AcceptanceError> {
+    use crate::exact_cert_t2::{verify_against_inputs, CertError};
+    match verify_against_inputs(cert_bytes, id, visible, question, answer, ok_lines_raw) {
+        Ok(_) => {}
+        Err(CertError::Empty) => {
+            return Err(AcceptanceError::Message("tier2-cert: empty (fail-closed)"));
+        }
+        Err(CertError::PlaceholderFlag) => {
+            return Err(AcceptanceError::Message(
+                "tier2-cert: PLACEHOLDER (fail-closed)",
+            ));
+        }
+        Err(e) => return Err(AcceptanceError::Message(e.as_str())),
+    }
+    NatTargetFragment.check(question, answer, visible)
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
