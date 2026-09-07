@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Same acceptance API as the guest (host preflight + unit tests).
-use skeleton_commit_program::check_development;
+use skeleton_commit_program::{build_tier1_cert, check_development, encode_tier1_cert};
 
 const ELF: Elf = include_elf!("skeleton-commit-program");
 
@@ -276,14 +276,25 @@ fn main() {
     let client = ProverClient::from_env();
     let pk = client.setup(ELF).expect("setup");
 
+    // Goal A Tier-1 cert: bind Q/A/id (fail-closed in guest if missing/placeholder).
+    let tier1 = build_tier1_cert(id, &question, &answer, args.visible, report.nat_expr_eval);
+    let cert_bytes = encode_tier1_cert(&tier1);
+    fs::write(out.join("tier1_cert.bin"), &cert_bytes).expect("write tier1_cert.bin");
+    println!(
+        "tier1-cert: {} bytes (nat_expr_eval={})",
+        cert_bytes.len(),
+        report.nat_expr_eval
+    );
+
     let mut stdin = SP1Stdin::new();
     stdin.write(&id);
     stdin.write(&args.visible);
     stdin.write_vec(question.clone());
     stdin.write_vec(answer.clone());
+    stdin.write_vec(cert_bytes.to_vec());
 
     println!(
-        "NON-BECOME skeleton prove (acceptance kernel fragment, NOT full coqchk): system={:?} visible={} id=0x{}",
+        "NON-BECOME skeleton prove (Tier-1 cert + Nat fragment, NOT full coqchk): system={:?} visible={} id=0x{}",
         args.system,
         args.visible,
         hex::encode(id)
@@ -361,7 +372,7 @@ fn main() {
         question_byte_len: question.len(),
         answer_byte_len: answer.len(),
         proof_byte_len: proof_bytes.len(),
-        note: "NON-BECOME skeleton SP1 proof with ACCEPTANCE KERNEL FRAGMENT (widened NatExpr + exists/eq Target shapes). NOT full coqchk / Rocq kernel. NOT a toy string checker. Placeholder id ≠ official jobHash. programVKey from THIS skeleton ELF only.".into(),
+        note: "NON-BECOME skeleton SP1 proof with TIER-1 CERT (bind Q/A/id) + Nat fragment (NOT full coqchk). NOT full coqchk / Rocq kernel. NOT a toy string checker. Placeholder id ≠ official jobHash. programVKey from THIS skeleton ELF only.".into(),
         docker_gap: "Docker not installed on this box; ELF built with local cargo prove / sp1-build. vkey may differ across machines until cargo prove build --docker is available.".into(),
     };
     fs::write(

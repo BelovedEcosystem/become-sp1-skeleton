@@ -185,11 +185,39 @@ pub fn check_nat_target_fragment(
 /// Guest entrypoint — delegates to [`NatTargetFragment`].
 ///
 /// When swapping backends, change only this delegation (or inject via a static).
+/// Prefer [`check_with_tier1_cert`] for Goal A settlement (fail-closed cert binding).
 pub fn check_development(
     question: &[u8],
     answer: &[u8],
     visible: u32,
 ) -> Result<CheckReport, AcceptanceError> {
+    NatTargetFragment.check(question, answer, visible)
+}
+
+/// Goal A settlement entry: verify Tier-1 cert (bind Q/A/id) then short Nat fragment.
+///
+/// Empty cert / PLACEHOLDER / NotImplemented ⇒ error (never Valid).
+pub fn check_with_tier1_cert(
+    question: &[u8],
+    answer: &[u8],
+    visible: u32,
+    id: &[u8; 32],
+    cert_bytes: &[u8],
+) -> Result<CheckReport, AcceptanceError> {
+    use crate::exact_cert::{verify_against_inputs, CertError};
+    match verify_against_inputs(cert_bytes, id, visible, question, answer) {
+        Ok(_) => {}
+        Err(CertError::Empty) => {
+            return Err(AcceptanceError::Message("tier1-cert: empty (fail-closed)"));
+        }
+        Err(CertError::PlaceholderFlag) => {
+            return Err(AcceptanceError::Message(
+                "tier1-cert: PLACEHOLDER/NotImplemented (fail-closed)",
+            ));
+        }
+        Err(e) => return Err(AcceptanceError::Message(e.as_str())),
+    }
+    // Short semantic check (Nat toys). CoqchkPortable must never be used here.
     NatTargetFragment.check(question, answer, visible)
 }
 
@@ -405,5 +433,29 @@ mod tests {
                   Definition visible_result : nat := 2.\n";
         let r = NatTargetFragment.check(q, a, 2).unwrap();
         assert_eq!(r.nat_expr_eval, 2);
+    }
+
+    #[test]
+    fn check_with_tier1_cert_empty_fails() {
+        let id = [9u8; 32];
+        let q = b"Definition Target : Prop := exists n : nat, 1 + 1 = n.";
+        let a = b"Definition answer : Target := ex_intro _ 2 eq_refl.\nDefinition visible_result : nat := 2.\n";
+        let err = check_with_tier1_cert(q, a, 2, &id, &[]).unwrap_err();
+        assert!(
+            err.as_str().contains("fail-closed") || err.as_str().contains("empty"),
+            "got: {}",
+            err.as_str()
+        );
+    }
+
+    #[test]
+    fn check_with_tier1_cert_ok() {
+        use crate::exact_cert::{build, encode};
+        let id = [9u8; 32];
+        let q = b"Definition Target : Prop := exists n : nat, 1 + 1 = n.";
+        let a = b"Definition answer : Target := ex_intro _ 2 eq_refl.\nDefinition visible_result : nat := 2.\n";
+        let cert = encode(&build(id, q, a, 2, 2));
+        let r = check_with_tier1_cert(q, a, 2, &id, &cert).unwrap();
+        assert_eq!(r.visible, 2);
     }
 }
