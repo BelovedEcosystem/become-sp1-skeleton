@@ -63,6 +63,15 @@ struct Args {
     /// Defense in depth only — does NOT replace guest acceptance. Not full coqchk-in-guest.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     require_host_coqchk: bool,
+
+    /// Tier-2 T2CERT0 bytes (required for current guest ELF @ f26f129+).
+    /// Guest reads cert + ok_lines after Q/A; feeding Tier-1-only stdin yields verify UnexpectedExitCode(3).
+    #[arg(long)]
+    tier2_cert: Option<PathBuf>,
+
+    /// Canonical ok_lines blob for Tier-2 safe_ok_digest (host-sorted).
+    #[arg(long)]
+    tier2_ok_lines: Option<PathBuf>,
 }
 
 #[derive(Serialize)]
@@ -276,13 +285,27 @@ fn main() {
     let client = ProverClient::from_env();
     let pk = client.setup(ELF).expect("setup");
 
-    // Goal A Tier-1 cert: bind Q/A/id (fail-closed in guest if missing/placeholder).
+    // Guest @ f26f129+ is Tier-2: id, visible, Q, A, T2CERT0, ok_lines.
+    // Feeding Tier-1-only stdin makes the guest panic → SP1 verify UnexpectedExitCode(3)
+    // (become-dvm-34249661691: Groth16 proved a failing guest, then verify failed).
+    let (tier2_cert_path, tier2_ok_path) = match (&args.tier2_cert, &args.tier2_ok_lines) {
+        (Some(c), Some(o)) => (c.clone(), o.clone()),
+        _ => panic!(
+            "Tier-2 guest ELF requires --tier2-cert and --tier2-ok-lines (job usually ships tier2_cert.bin + tier2_ok_lines.txt). Missing them caused verify UnexpectedExitCode(3) after Groth16 on EC2."
+        ),
+    };
+    let cert_bytes = read_required(&tier2_cert_path, "tier2_cert");
+    let ok_lines = read_required(&tier2_ok_path, "tier2_ok_lines");
+    // Still emit a Tier-1 cert artifact for operators/debug (not fed to guest).
     let tier1 = build_tier1_cert(id, &question, &answer, args.visible, report.nat_expr_eval);
-    let cert_bytes = encode_tier1_cert(&tier1);
-    fs::write(out.join("tier1_cert.bin"), &cert_bytes).expect("write tier1_cert.bin");
+    let tier1_bytes = encode_tier1_cert(&tier1);
+    fs::write(out.join("tier1_cert.bin"), &tier1_bytes).expect("write tier1_cert.bin");
+    fs::write(out.join("tier2_cert.bin"), &cert_bytes).expect("write tier2_cert.bin copy");
+    fs::write(out.join("tier2_ok_lines.txt"), &ok_lines).expect("write tier2_ok_lines copy");
     println!(
-        "tier1-cert: {} bytes (nat_expr_eval={})",
+        "tier2-cert: {} bytes; ok_lines: {} bytes (nat_expr_eval={})",
         cert_bytes.len(),
+        ok_lines.len(),
         report.nat_expr_eval
     );
 
@@ -292,9 +315,10 @@ fn main() {
     stdin.write_vec(question.clone());
     stdin.write_vec(answer.clone());
     stdin.write_vec(cert_bytes.to_vec());
+    stdin.write_vec(ok_lines);
 
     println!(
-        "NON-BECOME skeleton prove (Tier-1 cert + Nat fragment, NOT full coqchk): system={:?} visible={} id=0x{}",
+        "NON-BECOME skeleton prove (Tier-2 T2CERT0 + Nat fragment, NOT full coqchk): system={:?} visible={} id=0x{}",
         args.system,
         args.visible,
         hex::encode(id)
@@ -372,7 +396,7 @@ fn main() {
         question_byte_len: question.len(),
         answer_byte_len: answer.len(),
         proof_byte_len: proof_bytes.len(),
-        note: "NON-BECOME skeleton SP1 proof with TIER-1 CERT (bind Q/A/id) + Nat fragment (NOT full coqchk). NOT full coqchk / Rocq kernel. NOT a toy string checker. Placeholder id ≠ official jobHash. programVKey from THIS skeleton ELF only.".into(),
+        note: "NON-BECOME skeleton SP1 proof with TIER-2 T2CERT0 (bind Q/A/id + ok_lines) + Nat fragment (NOT full coqchk). NOT full coqchk / Rocq kernel. Placeholder id ≠ official jobHash. programVKey from THIS skeleton ELF only.".into(),
         docker_gap: "Docker not installed on this box; ELF built with local cargo prove / sp1-build. vkey may differ across machines until cargo prove build --docker is available.".into(),
     };
     fs::write(
